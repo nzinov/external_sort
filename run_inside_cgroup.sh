@@ -1,3 +1,3 @@
 #!/bin/bash
 
-sudo cgexec -g memory:extmem sudo -u ignat $@
+sudo cgexec -g memory:extmem sudo -u nikolay $@
