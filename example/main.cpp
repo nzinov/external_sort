@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 using namespace std;
+using namespace std::experimental::filesystem;
 
 
 const size_t PAGE_SIZE = 4 * 1024;
@@ -109,7 +110,6 @@ struct TFileOutput {
         if (c != size * sizeof(uint64_t)) {
             exit(1);
         }
-        fdatasync(desc);
     }
     
     int desc = -1;
