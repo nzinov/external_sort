@@ -1,5 +1,4 @@
 #include <fstream>
-#include <experimental/filesystem>
 #include <iostream>
 #include <iterator>
 #include <sstream>
@@ -15,34 +14,35 @@
 #include <unistd.h>
 
 using namespace std;
-using namespace std::experimental::filesystem;
-
 
 const size_t PAGE_SIZE = 4 * 1024;
 
 struct TBlock {
     TBlock(const TBlock& _) = delete;
     TBlock(TBlock&& other) {
+        Storage = other.Storage;
         Block = other.Block;
         BlockSize = other.BlockSize;
-        other.Block = nullptr;
+        other.Storage = nullptr;
     }
     
     TBlock() {}
 
     TBlock(size_t blockSize)
         : BlockSize(blockSize) {
-        Block = reinterpret_cast<size_t*>(aligned_alloc(512, blockSize * sizeof(uint64_t))); 
+        Storage = std::malloc(blockSize * sizeof(uint64_t) + 512); 
+        Block = reinterpret_cast<size_t*>((((size_t)Storage >> 9) + 1) << 9);
     }
 
     ~TBlock() {
         if (Block != nullptr) {
-            std::free(reinterpret_cast<void*>(Block));
+            std::free(Storage);
         }
     }
 
     size_t BlockSize;
     size_t* Block = nullptr;
+    void* Storage = nullptr;
 };
 
 struct TFileInput {
@@ -281,7 +281,9 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
         parts.emplace(partIdx, newPartSize);
     }
     std::rename(GetTmpPath(tmpPath, nextIdx - 1).c_str(), outputPath.c_str());
-    resize_file(outputPath.c_str(), parts.top().Size * sizeof(uint64_t));
+    if (!std::system(("truncate -s " + std::to_string(parts.top().Size * sizeof(uint64_t)) + " " + outputPath).c_str())) {
+        exit(1);
+    }
 }
 
 int main(int argc, char** argv) {
