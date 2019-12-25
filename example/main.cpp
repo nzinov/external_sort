@@ -13,21 +13,21 @@ using namespace std;
 
 
 struct TBlockReader {
-    TBlockReader(ifstream& reader, size_t dataSize, size_t blockSize, size_t startOffset)
-        : Reader(reader)
-        , DataSize(dataSize)
+    TBlockReader(ifstream reader, size_t blockSize)
+        : Reader(std::move(reader))
         , BlockSize(blockSize)
-        , Offset(startOffset) {
+        , Block(blockSize) {
         LoadBlock();
     }
 
     void LoadBlock() {
         Pos = 0;
-        size_t size = std::min(BlockSize, DataSize);
-        Reader.seekg(Offset * sizeof(uint64_t));
-        Block.resize(size);
-        Reader.read(reinterpret_cast<char*>(Block.data()), size * sizeof(uint64_t));
-        Offset += size;
+        Reader.read(reinterpret_cast<char*>(Block.data()), BlockSize * sizeof(uint64_t));
+        size_t readSize = Reader.gcount() / sizeof(uint64_t);
+        Block.resize(readSize);
+        if (readSize == 0) {
+            Eof = true;
+        }
     }
 
     uint64_t inline Get() {
@@ -37,19 +37,18 @@ struct TBlockReader {
     uint64_t Next() {
         size_t value = Get();
         ++Pos;
-        if (Pos >= DataSize) {
-            Eof = true;
-        } else if (Pos >= BlockSize) {
-            DataSize -= Block.size();
-            LoadBlock();
+        if (Pos >= Block.size()) {
+            if (Reader.eof()) {
+                Eof = true;
+            } else {
+                LoadBlock();
+            }
         }
         return value;
     }
 
-    ifstream& Reader;
-    size_t DataSize;
+    ifstream Reader;
     size_t BlockSize;
-    size_t Offset;
     size_t Pos = 0;
     bool Eof = false;
     vector<uint64_t> Block;
@@ -68,9 +67,22 @@ struct TReaderPointer {
     uint64_t Value;
 };
 
+struct TPartMeta {
+    TPartMeta(size_t partIdx, size_t size)
+        : PartIdx(partIdx)
+        , Size(size) {}
+
+    bool operator<(const TPartMeta& other) const {
+        return Size > other.Size;
+    }
+
+    size_t PartIdx;
+    size_t Size;
+};
+
 struct TBlockWriter {
-    TBlockWriter(ofstream& writer, size_t blockSize)
-        : Writer(writer)
+    TBlockWriter(ofstream writer, size_t blockSize)
+        : Writer(std::move(writer))
         , BlockSize(blockSize)
         , Block(blockSize) {
     }
@@ -88,7 +100,7 @@ struct TBlockWriter {
         }
     }
 
-    ofstream& Writer;
+    ofstream Writer;
     size_t DataSize;
     size_t BlockSize;
     size_t Offset;
@@ -107,62 +119,62 @@ void Merge(std::priority_queue<TReaderPointer>& heap, std::vector<TBlockReader>&
             heap.emplace(el.ReaderIdx, reader.Next());
         }
     }
-    readers.clear();
+    writer.DumpBlock();
 }
+
+string GetTmpPath(string tmpPath, size_t partIdx) {
+    return tmpPath + "/tmp" + std::to_string(partIdx);
+}
+
 void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimit, size_t blockSize)
 {
     memoryLimit /= sizeof(uint64_t);
     blockSize /= sizeof(uint64_t);
     const size_t fanout = memoryLimit / blockSize - 1;
-    const std::vector<string> tmpFilePaths = {tmpPath + "/tmp1", tmpPath + "/tmp2"};
-    vector<size_t> parts;
+    std::priority_queue<TPartMeta> parts;
+    size_t nextIdx = 0;
     {
         ifstream input(inputPath, std::ios::binary);
-        ofstream tmp(tmpFilePaths[0], std::ios::binary);
         vector<uint64_t> data(memoryLimit);
         while (!input.eof()) {
+            size_t partIdx = nextIdx++;
             input.read(reinterpret_cast<char*>(data.data()), memoryLimit * sizeof(uint64_t));
             size_t readSize = input.gcount() / sizeof(uint64_t);
             if (readSize) {
+                ofstream tmp(GetTmpPath(tmpPath, partIdx), std::ios::binary);
                 std::sort(data.begin(), data.begin() + readSize);
                 tmp.write(reinterpret_cast<char*>(data.data()), readSize * sizeof(uint64_t));
-                parts.push_back(readSize);
+                parts.emplace(partIdx, readSize);
             }
         }
     }
-    bool direction = false;
     while (parts.size() > 1) {
-        std::cerr << parts.size() << std::endl;
-        vector<size_t> newParts;
-        ifstream input(tmpFilePaths[direction], std::ios::binary);
-        ofstream output(tmpFilePaths[!direction], std::ios::binary);
-        size_t readOffset = 0;
-        size_t writeOffset = 0;
         vector<TBlockReader> readers;
         std::priority_queue<TReaderPointer> heap;
-        TBlockWriter writer(output, blockSize);
         size_t newPartSize = 0;
-        for (size_t partSize : parts) {
-            readers.emplace_back(input, partSize, blockSize, readOffset);
-            heap.emplace(readers.size() - 1, readers.back().Next());
-            readOffset += partSize;
-            newPartSize += partSize;
-            if (readers.size() >= fanout) {
-                Merge(heap, readers, writer);
-                newParts.push_back(newPartSize);
-                newPartSize = 0;
+        std::vector<string> fileNames;
+        for (size_t i = 0; i < fanout; ++i) {
+            if (parts.empty()) {
+                break;
             }
+            auto partMeta = parts.top();
+            parts.pop();
+            string fileName = GetTmpPath(tmpPath, partMeta.PartIdx);
+            fileNames.push_back(fileName);
+            readers.emplace_back(ifstream(fileName, std::ios::binary), blockSize);
+            heap.emplace(readers.size() - 1, readers.back().Next());
+            newPartSize += partMeta.Size;
         }
-        if (!readers.empty()) {
-            Merge(heap, readers, writer);
-            newParts.push_back(newPartSize);
+        std::cerr << newPartSize << std::endl;
+        size_t partIdx = nextIdx++;
+        TBlockWriter writer(ofstream(GetTmpPath(tmpPath, partIdx), std::ios::binary), blockSize);
+        Merge(heap, readers, writer);
+        for (string& fileName : fileNames) {
+            std::remove(fileName.c_str());
         }
-        writer.DumpBlock();
-        direction = !direction;
-        parts = std::move(newParts);
-        newParts.clear();
+        parts.emplace(partIdx, newPartSize);
     }
-    std::rename(tmpFilePaths[direction].c_str(), outputPath.c_str());
+    std::rename(GetTmpPath(tmpPath, nextIdx - 1).c_str(), outputPath.c_str());
 }
 
 int main(int argc, char** argv) {
