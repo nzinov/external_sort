@@ -8,24 +8,123 @@
 #include <algorithm>
 #include <queue>
 #include <cassert>
+#include <fcntl.h>
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
 
 using namespace std;
 
 
-struct TBlockReader {
-    TBlockReader(ifstream reader, size_t blockSize)
-        : Reader(std::move(reader))
-        , BlockSize(blockSize)
-        , Block(blockSize) {
+const size_t PAGE_SIZE = 4 * 1024;
+
+struct TBlock {
+    TBlock(const TBlock& _) = delete;
+    TBlock(TBlock&& other) {
+        Block = other.Block;
+        BlockSize = other.BlockSize;
+        other.Block = nullptr;
+    }
+    
+    TBlock() {}
+
+    TBlock(size_t blockSize)
+        : BlockSize(blockSize) {
+        Block = reinterpret_cast<size_t*>(aligned_alloc(512, blockSize * sizeof(uint64_t))); 
+    }
+
+    ~TBlock() {
+        if (Block != nullptr) {
+            std::free(reinterpret_cast<void*>(Block));
+        }
+    }
+
+    size_t BlockSize;
+    size_t* Block = nullptr;
+};
+
+struct TFileInput {
+    TFileInput(const TFileInput& _) = delete;
+    TFileInput(TFileInput&& other) {
+        desc = other.desc;
+        other.desc = -1;
+    }
+
+    TFileInput(const string& filename) {
+        desc = open(filename.c_str(), O_RDONLY | O_DIRECT);
+        if (desc < 0) {
+            exit(1);
+        }
+    }
+
+    ~TFileInput() {
+        if (desc > -1 && close(desc) < 0) {
+            exit(1);
+        }
+    }
+
+    int Read(uint64_t* buffer, size_t size) {
+        int c = read(desc, reinterpret_cast<char*>(buffer), size * sizeof(uint64_t));
+        if (c < 0) {
+            exit(1);
+        }
+        if (c == 0) {
+            Eof = true;
+        }
+        return c / sizeof(uint64_t);
+    }
+
+    bool eof() const {
+        return Eof;
+    }
+    
+    bool Eof = false;
+    int desc = -1;
+};
+
+struct TFileOutput {
+    TFileOutput(const TFileOutput& _) = delete;
+    TFileOutput(TFileOutput&& other) {
+        desc = other.desc;
+        other.desc = -1;
+    }
+
+    TFileOutput(const string& filename) {
+        desc = open(filename.c_str(), O_WRONLY | O_CREAT | O_DIRECT, 0664);
+        if (desc < 0) {
+            exit(1);
+        }
+    }
+
+    ~TFileOutput() {
+        if (desc > -1 && close(desc) < 0) {
+            exit(1);
+        }
+    }
+
+    void Write(uint64_t* buffer, size_t size) {
+        int c = write(desc, reinterpret_cast<char*>(buffer), size * sizeof(uint64_t));
+        if (c != size * sizeof(uint64_t)) {
+            exit(1);
+        }
+        fdatasync(desc);
+    }
+    
+    int desc = -1;
+};
+
+struct TBlockReader : TBlock {
+    TBlockReader(const string& fname, size_t dataSize, size_t blockSize)
+        : TBlock(blockSize)
+        , DataSize(dataSize)
+        , Reader(fname) {
         LoadBlock();
     }
 
     void LoadBlock() {
         Pos = 0;
-        Reader.read(reinterpret_cast<char*>(Block.data()), BlockSize * sizeof(uint64_t));
-        size_t readSize = Reader.gcount() / sizeof(uint64_t);
-        Block.resize(readSize);
-        if (readSize == 0) {
+        ReadSize = Reader.Read(Block, BlockSize);
+        if (ReadSize == 0) {
             Eof = true;
         }
     }
@@ -37,7 +136,10 @@ struct TBlockReader {
     uint64_t Next() {
         size_t value = Get();
         ++Pos;
-        if (Pos >= Block.size()) {
+        --DataSize;
+        if (DataSize == 0) {
+            Eof = true;
+        } else if (Pos >= ReadSize) {
             if (Reader.eof()) {
                 Eof = true;
             } else {
@@ -47,11 +149,11 @@ struct TBlockReader {
         return value;
     }
 
-    ifstream Reader;
-    size_t BlockSize;
+    TFileInput Reader;
     size_t Pos = 0;
+    size_t DataSize;
+    size_t ReadSize;
     bool Eof = false;
-    vector<uint64_t> Block;
 };
 
 struct TReaderPointer {
@@ -80,15 +182,14 @@ struct TPartMeta {
     size_t Size;
 };
 
-struct TBlockWriter {
-    TBlockWriter(ofstream writer, size_t blockSize)
-        : Writer(std::move(writer))
-        , BlockSize(blockSize)
-        , Block(blockSize) {
+struct TBlockWriter : TBlock {
+    TBlockWriter(const string& fname, size_t blockSize)
+        : TBlock(blockSize)
+        , Writer(fname) {
     }
 
     void DumpBlock() {
-        Writer.write(reinterpret_cast<char*>(Block.data()), Pos * sizeof(uint64_t));
+        Writer.Write(Block, BlockSize);
         Pos = 0;
     }
 
@@ -100,13 +201,8 @@ struct TBlockWriter {
         }
     }
 
-    ofstream Writer;
-    size_t DataSize;
-    size_t BlockSize;
-    size_t Offset;
+    TFileOutput Writer;
     size_t Pos = 0;
-    bool Eof = false;
-    vector<uint64_t> Block;
 };
 
 void Merge(std::priority_queue<TReaderPointer>& heap, std::vector<TBlockReader>& readers, TBlockWriter& writer) {
@@ -128,26 +224,30 @@ string GetTmpPath(string tmpPath, size_t partIdx) {
 
 void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimit, size_t blockSize)
 {
+    memoryLimit = ((memoryLimit >> 9)  + 1) << 9;
+    std::cerr << memoryLimit << std::endl;
     memoryLimit /= sizeof(uint64_t);
+    blockSize = ((blockSize >> 9) + 1) << 9;
+    std::cerr << blockSize << std::endl;
     blockSize /= sizeof(uint64_t);
     const size_t fanout = memoryLimit / blockSize - 1;
     std::priority_queue<TPartMeta> parts;
     size_t nextIdx = 0;
     {
-        ifstream input(inputPath, std::ios::binary);
-        vector<uint64_t> data(memoryLimit);
+        TFileInput input(inputPath);
+        TBlock buffer(memoryLimit);
         while (!input.eof()) {
             size_t partIdx = nextIdx++;
-            input.read(reinterpret_cast<char*>(data.data()), memoryLimit * sizeof(uint64_t));
-            size_t readSize = input.gcount() / sizeof(uint64_t);
+            size_t readSize = input.Read(buffer.Block, memoryLimit);
             if (readSize) {
-                ofstream tmp(GetTmpPath(tmpPath, partIdx), std::ios::binary);
-                std::sort(data.begin(), data.begin() + readSize);
-                tmp.write(reinterpret_cast<char*>(data.data()), readSize * sizeof(uint64_t));
+                TFileOutput tmp(GetTmpPath(tmpPath, partIdx));
+                std::sort(buffer.Block, buffer.Block + readSize);
+                tmp.Write(buffer.Block, memoryLimit);
                 parts.emplace(partIdx, readSize);
             }
         }
     }
+    std::cerr << "merge phase" << std::endl;
     while (parts.size() > 1) {
         vector<TBlockReader> readers;
         std::priority_queue<TReaderPointer> heap;
@@ -161,13 +261,13 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
             parts.pop();
             string fileName = GetTmpPath(tmpPath, partMeta.PartIdx);
             fileNames.push_back(fileName);
-            readers.emplace_back(ifstream(fileName, std::ios::binary), blockSize);
+            readers.emplace_back(fileName, partMeta.Size, blockSize);
             heap.emplace(readers.size() - 1, readers.back().Next());
             newPartSize += partMeta.Size;
         }
         std::cerr << newPartSize << std::endl;
         size_t partIdx = nextIdx++;
-        TBlockWriter writer(ofstream(GetTmpPath(tmpPath, partIdx), std::ios::binary), blockSize);
+        TBlockWriter writer(GetTmpPath(tmpPath, partIdx), blockSize);
         Merge(heap, readers, writer);
         for (string& fileName : fileNames) {
             std::remove(fileName.c_str());
