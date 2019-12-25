@@ -1,4 +1,5 @@
 #include <fstream>
+#include <experimental/filesystem>
 #include <iostream>
 #include <iterator>
 #include <sstream>
@@ -47,6 +48,7 @@ struct TFileInput {
     TFileInput(const TFileInput& _) = delete;
     TFileInput(TFileInput&& other) {
         desc = other.desc;
+        Eof = other.Eof;
         other.desc = -1;
     }
 
@@ -224,13 +226,15 @@ string GetTmpPath(string tmpPath, size_t partIdx) {
 
 void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimit, size_t blockSize)
 {
-    memoryLimit = ((memoryLimit >> 9)  + 1) << 9;
+    memoryLimit = (memoryLimit >> 10) << 10;
     std::cerr << memoryLimit << std::endl;
     memoryLimit /= sizeof(uint64_t);
     blockSize = ((blockSize >> 9) + 1) << 9;
     std::cerr << blockSize << std::endl;
     blockSize /= sizeof(uint64_t);
     const size_t fanout = memoryLimit / blockSize - 1;
+    memoryLimit >>= 1;
+    std::cerr << "fanout: " << fanout << std::endl;
     std::priority_queue<TPartMeta> parts;
     size_t nextIdx = 0;
     {
@@ -249,7 +253,9 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
     }
     std::cerr << "merge phase" << std::endl;
     while (parts.size() > 1) {
+        std::cerr << "part num " << parts.size() << std::endl;
         vector<TBlockReader> readers;
+        readers.reserve(fanout);
         std::priority_queue<TReaderPointer> heap;
         size_t newPartSize = 0;
         std::vector<string> fileNames;
@@ -275,6 +281,7 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
         parts.emplace(partIdx, newPartSize);
     }
     std::rename(GetTmpPath(tmpPath, nextIdx - 1).c_str(), outputPath.c_str());
+    resize_file(outputPath.c_str(), parts.top().Size * sizeof(uint64_t));
 }
 
 int main(int argc, char** argv) {
