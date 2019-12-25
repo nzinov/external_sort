@@ -281,9 +281,7 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
         parts.emplace(partIdx, newPartSize);
     }
     std::rename(GetTmpPath(tmpPath, nextIdx - 1).c_str(), outputPath.c_str());
-    if (!std::system(("truncate -s " + std::to_string(parts.top().Size * sizeof(uint64_t)) + " " + outputPath).c_str())) {
-        exit(1);
-    }
+    int res = std::system(("truncate -s " + std::to_string(parts.top().Size * sizeof(uint64_t)) + " " + outputPath).c_str());
 }
 
 int main(int argc, char** argv) {
