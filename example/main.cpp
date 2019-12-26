@@ -12,10 +12,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
+#include <chrono>
 
 using namespace std;
 
 const size_t PAGE_SIZE = 4 * 1024;
+size_t iotime = 0;
+size_t ioc = 0;
 
 struct TBlock {
     TBlock(const TBlock& _) = delete;
@@ -67,6 +70,7 @@ struct TFileInput {
     }
 
     int Read(uint64_t* buffer, size_t size) {
+        auto start = std::chrono::high_resolution_clock::now();
         int c = read(desc, reinterpret_cast<char*>(buffer), size * sizeof(uint64_t));
         if (c < 0) {
             exit(1);
@@ -74,6 +78,10 @@ struct TFileInput {
         if (c < size) {
             Eof = true;
         }
+        auto finish = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = finish - start;
+        iotime += elapsed.count();
+        ioc += 1;
         return c / sizeof(uint64_t);
     }
 
@@ -106,10 +114,15 @@ struct TFileOutput {
     }
 
     void Write(uint64_t* buffer, size_t size) {
+        auto start = std::chrono::high_resolution_clock::now();
         int c = write(desc, reinterpret_cast<char*>(buffer), size * sizeof(uint64_t));
         if (c != size * sizeof(uint64_t)) {
             exit(1);
         }
+        auto finish = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = finish - start;
+        iotime += elapsed.count();
+        ioc += 1;
     }
     
     int desc = -1;
@@ -316,6 +329,7 @@ int main(int argc, char** argv) {
     }
 
     Sort(inputPath, outputPath, tmpPath, memoryLimit, blockSize);
+    std::cout << iotime << ' ' << ioc << std::endl;
 
     return 0;
 }

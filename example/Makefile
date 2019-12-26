@@ -1,5 +1,5 @@
 all: build
 
 build:
-	g++ main.cpp -O2 -std=c++17 -o main -lstdc++fs
+	g++-7 main.cpp -O2 -std=c++17 -o main
 
