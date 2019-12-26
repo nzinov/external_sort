@@ -238,7 +238,6 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
     blockSize /= sizeof(uint64_t);
     const size_t fanout = memoryLimit / blockSize - 1;
     memoryLimit >>= 1;
-    std::cerr << "fanout: " << fanout << std::endl;
     std::priority_queue<TPartMeta> parts;
     size_t nextIdx = 0;
     {
@@ -255,9 +254,11 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
             }
         }
     }
-    int dummyNum = parts.size() - parts.size() / (fanout - 1) * (fanout - 1);
-    if (dummyNum < 0) {
-        dummyNum += fanout - 1;
+    std::cerr << "parts: " << parts.size() << std::endl;
+    std::cerr << "fanout: " << fanout << std::endl;
+    size_t dummyNum = 0;
+    if ((parts.size() - 1) % (fanout - 1) != 0) {
+        dummyNum = (parts.size() - 1) / (fanout - 1) * (fanout - 1) + (fanout - 1) - (parts.size() - 1);
     }
     std::cerr << "dummy num " << dummyNum << std::endl;
     std::cerr << "merge phase" << std::endl;
