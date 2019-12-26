@@ -71,7 +71,7 @@ struct TFileInput {
         if (c < 0) {
             exit(1);
         }
-        if (c == 0) {
+        if (c < size) {
             Eof = true;
         }
         return c / sizeof(uint64_t);
