@@ -172,6 +172,10 @@ struct TReaderPointer {
 };
 
 struct TPartMeta {
+    TPartMeta() 
+        : PartIdx(0)
+        , Size(0) {}
+
     TPartMeta(size_t partIdx, size_t size)
         : PartIdx(partIdx)
         , Size(size) {}
@@ -251,6 +255,11 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
             }
         }
     }
+    int dummyNum = parts.size() - parts.size() / (fanout - 1) * (fanout - 1);
+    if (dummyNum < 0) {
+        dummyNum += fanout - 1;
+    }
+    std::cerr << "dummy num " << dummyNum << std::endl;
     std::cerr << "merge phase" << std::endl;
     while (parts.size() > 1) {
         std::cerr << "part num " << parts.size() << std::endl;
@@ -259,7 +268,7 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
         std::priority_queue<TReaderPointer> heap;
         size_t newPartSize = 0;
         std::vector<string> fileNames;
-        for (size_t i = 0; i < fanout; ++i) {
+        for (size_t i = 0; i < fanout - dummyNum; ++i) {
             if (parts.empty()) {
                 break;
             }
@@ -279,6 +288,7 @@ void Sort(string inputPath, string outputPath, string tmpPath, size_t memoryLimi
             std::remove(fileName.c_str());
         }
         parts.emplace(partIdx, newPartSize);
+        dummyNum = 0;
     }
     std::rename(GetTmpPath(tmpPath, nextIdx - 1).c_str(), outputPath.c_str());
     int res = std::system(("truncate -s " + std::to_string(parts.top().Size * sizeof(uint64_t)) + " " + outputPath).c_str());
